@@ -1,76 +1,25 @@
-use lazy_static::{__Deref, lazy_static};
+mod anonymiser;
+mod db;
+
 use read_input::prelude::*;
-use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode, WriteLogger};
-use std::collections::{HashMap};
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
-use std::path::Path;
-use std::sync::Mutex;
+use simplelog::{Config, LevelFilter, WriteLogger};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
-use sha2::{Sha256};
-use sha2::Digest;
-
-
-const STUDENTS_DATABASE_FILE: &str = "db.json";
-const TEACHERS_DATABASE_FILE: &str = "teachers_db.json";
-
-// create student struct
-#[derive(Debug, Serialize, Deserialize)]
-struct Student {
-    grades: Vec<f32>,
-    password: String,
-}
-
-lazy_static! {
-    static ref STUDENT_DATABASE: Mutex<HashMap<String, Student>> = {
-        log::info!("Loading student database");
-        let map = read_database_from_file(STUDENTS_DATABASE_FILE).unwrap_or(HashMap::new());
-        Mutex::new(map)
-    };
-    static ref TEACHER_DATABASE: HashMap<String, String> = {
-        log::info!("Loading teacher database");
-        read_teachers_from_file(TEACHERS_DATABASE_FILE).unwrap_or(HashMap::new())
-    };
-}
-
-fn sha256_hash(s: String) -> String {
-    let hash = Sha256::digest(s);
-    format!("{:X}", hash)
-}
-
-fn read_database_from_file<P: AsRef<Path>>(
-    path: P,
-) -> Result<HashMap<String, Student>, Box<dyn Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let map = serde_json::from_reader(reader)?;
-    Ok(map)
-}
-
-fn read_teachers_from_file<P: AsRef<Path>>(
-    path: P,
-) -> Result<HashMap<String, String>, Box<dyn Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let map = serde_json::from_reader(reader)?;
-    Ok(map)
-}
+use crate::db::{DATABASE, save_database_to_file, Teacher};
+use crate::anonymiser::anonymise;
 
 fn welcome() {
     println!("Welcome to KING: KING Is Not GAPS");
 }
 
-fn menu(teacher: &mut Option<String>) {
-    match *teacher {
-        Some(_) => teacher_action(),
+fn menu(teacher: &mut Option<Teacher>) {
+    match teacher {
+        Some(teacher) => teacher_action(teacher),
         None => student_action(teacher)
     }
 }
 
-fn student_action(teacher: &mut Option<String>){
+fn student_action(teacher: &mut Option<Teacher>){
     println!("*****\n1: See your grades\n2: Teachers' menu\n3: About\n0: Quit");
     let choice = input().inside(0..=2).msg("Enter Your choice: ").get();
     match choice {
@@ -81,7 +30,8 @@ fn student_action(teacher: &mut Option<String>){
     }
 }
 
-fn teacher_action() {
+fn teacher_action(teacher: &Teacher) {
+    println!("***** Welcome {} *****", teacher.name);
     println!("*****\n1: See grades of student\n2: Enter grades\n3 About\n0: Quit");
     let choice = input().inside(0..=2).msg("Enter Your choice: ").get();
     match choice {
@@ -95,8 +45,8 @@ fn teacher_action() {
 fn show_grades(message: &str, is_teacher: bool) {
     println!("{}", message);
     let name: String = input().get();
-    let db = STUDENT_DATABASE.lock().unwrap();
-    let student = db.get(&name);
+    let students = DATABASE.students.lock().unwrap();
+    let student = students.get(&name);
     // if not teacher ask for password
     if !is_teacher {
         let argon2 = Argon2::default();
@@ -106,10 +56,10 @@ fn show_grades(message: &str, is_teacher: bool) {
                 match  PasswordHash::new(student.password.as_str()) {
                     Ok(hash) => {
                         if argon2.verify_password(password.as_bytes(), &hash).is_ok() {
-                            log::info!("{} logged in successfully", name);
+                            log::info!("Student({}) logged in successfully", anonymise(&name));
                             true
                         } else {
-                            log::error!("{} failed to log in", name);
+                            log::warn!("Student({}) failed to log in", anonymise(&name));
                             false
                         }
                     },
@@ -139,20 +89,21 @@ fn show_grades(message: &str, is_teacher: bool) {
     };
 }
 
-fn become_teacher(teacher: &mut Option<String>) {
+fn become_teacher(teacher: &mut Option<Teacher>) {
     let username: String = input::<String>().msg("Enter your username: ").get();
     let password: String = input().msg("Enter your password: ").get();
 
     let argon2 = Argon2::default();
-    *teacher = match TEACHER_DATABASE.get(&username) {
-          Some(hash) => {
-              match  PasswordHash::new(hash) {
+    let teachers = DATABASE.teachers.lock().unwrap();
+    *teacher = match teachers.get(&username) {
+          Some(teacher) => {
+              match  PasswordHash::new(&*teacher.password) {
                   Ok(hash) => {
                       if argon2.verify_password(password.as_bytes(), &hash).is_ok() {
-                          log::info!("{} logged in successfully", sha256_hash(username.clone()));
-                          Some(username)
+                          log::info!("Teacher({}) logged in successfully", anonymise(&username));
+                          Some(teacher.clone())
                       } else {
-                          log::error!("{} failed to log in", sha256_hash(username.clone()));
+                          log::warn!("Teacher({}) failed to log in", anonymise(&username));
                           None
                       }
                   },
@@ -160,7 +111,7 @@ fn become_teacher(teacher: &mut Option<String>) {
               }
             }
             None => {
-                log::error!("{} failed to log in", sha256_hash(username.clone()));
+                log::warn!("Someone tried to log in with username {}", username);
                 None
             }
     }
@@ -171,24 +122,18 @@ fn enter_grade() {
     let name: String = input().get();
     println!("What is the new grade of the student?");
     let grade: f32 = input().add_test(|x| *x >= 0.0 && *x <= 6.0).get();
-    let mut map = STUDENT_DATABASE.lock().unwrap();
-    match map.get_mut(&name) {
+    let mut students = DATABASE.students.lock().unwrap();
+    match students.get_mut(&name) {
         Some(v) => v.grades.push(grade),
         None => {
-            map.insert(name, Student {
-                grades: vec![grade],
-                password: String::new(),
-            });
+            println!("User {} does not exist", name);
+            return;
         }
     };
 }
 
 fn quit() {
-    println!("Saving database!");
-    let map = STUDENT_DATABASE.lock().unwrap();
-    let file = File::create(STUDENTS_DATABASE_FILE).unwrap();
-    let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, &*map).unwrap();
+    save_database_to_file();
     std::process::exit(0);
 }
 
