@@ -1,25 +1,39 @@
 mod anonymiser;
 mod db;
+mod hash;
 
 use read_input::prelude::*;
 use simplelog::{Config, LevelFilter, WriteLogger};
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use std::fs::OpenOptions;
+use lazy_static::lazy_static;
 use crate::db::{DATABASE, save_database_to_file, Teacher};
 use crate::anonymiser::anonymise;
+use crate::hash::{hash_password, verify_hash};
+
+struct Connected<T> {
+    username : String,
+    data: T,
+}
+
+// create lazy hash for timing attacks
+lazy_static! {
+    static ref FAKE_HASH: String = {
+        hash_password("Dodo_fait_dodo".to_string())
+    };
+}
 
 fn welcome() {
     println!("Welcome to KING: KING Is Not GAPS");
 }
 
-fn menu(teacher: &mut Option<Teacher>) {
+fn menu(teacher: &mut Option<Connected<Teacher>>) {
     match teacher {
         Some(teacher) => teacher_action(teacher),
         None => student_action(teacher)
     }
 }
 
-fn student_action(teacher: &mut Option<Teacher>){
+fn student_action(teacher: &mut Option<Connected<Teacher>>){
     println!("*****\n1: See your grades\n2: Teachers' menu\n3: About\n0: Quit");
     let choice = input().inside(0..=2).msg("Enter Your choice: ").get();
     match choice {
@@ -30,13 +44,13 @@ fn student_action(teacher: &mut Option<Teacher>){
     }
 }
 
-fn teacher_action(teacher: &Teacher) {
-    println!("***** Welcome {} *****", teacher.name);
+fn teacher_action(teacher: &Connected<Teacher>) {
+    println!("***** Welcome {} *****", teacher.data.name);
     println!("*****\n1: See grades of student\n2: Enter grades\n3 About\n0: Quit");
     let choice = input().inside(0..=2).msg("Enter Your choice: ").get();
     match choice {
         1 => show_grades("Enter the name of the user of which you want to see the grades:", true),
-        2 => enter_grade(),
+        2 => enter_grade(teacher),
         0 => quit(),
         _ => panic!("impossible choice"),
     }
@@ -47,26 +61,25 @@ fn show_grades(message: &str, is_teacher: bool) {
     let name: String = input().get();
     let students = DATABASE.students.lock().unwrap();
     let student = students.get(&name);
+
     // if not teacher ask for password
     if !is_teacher {
-        let argon2 = Argon2::default();
         let password: String = input().msg("Enter your password: ").get();
         let valid = match student {
             Some(student) => {
-                match  PasswordHash::new(student.password.as_str()) {
-                    Ok(hash) => {
-                        if argon2.verify_password(password.as_bytes(), &hash).is_ok() {
-                            log::info!("Student({}) logged in successfully", anonymise(&name));
-                            true
-                        } else {
-                            log::warn!("Student({}) failed to log in", anonymise(&name));
-                            false
-                        }
-                    },
-                    _ => false
+                if verify_hash(password, student.password.clone()) {
+                    log::info!("Student({}) logged in successfully", anonymise(&name));
+                    true
+                } else {
+                    log::warn!("Student({}) failed to log in", anonymise(&name));
+                    false
                 }
             }
-            None => false
+            None => {
+                verify_hash(password, FAKE_HASH.clone());
+                log::warn!("Someone tried to log in as Student with username {}", name);
+                false
+            }
         };
         if !valid {
             println!("Cannot show grades.");
@@ -89,42 +102,41 @@ fn show_grades(message: &str, is_teacher: bool) {
     };
 }
 
-fn become_teacher(teacher: &mut Option<Teacher>) {
+fn become_teacher(teacher: &mut Option<Connected<Teacher>>) {
     let username: String = input::<String>().msg("Enter your username: ").get();
     let password: String = input().msg("Enter your password: ").get();
 
-    let argon2 = Argon2::default();
     let teachers = DATABASE.teachers.lock().unwrap();
     *teacher = match teachers.get(&username) {
           Some(teacher) => {
-              match  PasswordHash::new(&*teacher.password) {
-                  Ok(hash) => {
-                      if argon2.verify_password(password.as_bytes(), &hash).is_ok() {
-                          log::info!("Teacher({}) logged in successfully", anonymise(&username));
-                          Some(teacher.clone())
-                      } else {
-                          log::warn!("Teacher({}) failed to log in", anonymise(&username));
-                          None
-                      }
-                  },
-                  _ => None
+              if verify_hash(password, teacher.password.clone()) {
+                  log::info!("Teacher({}) logged in successfully", anonymise(&username));
+                  Some(Connected { username, data: teacher.clone() })
+              } else {
+                  log::warn!("Teacher({}) failed to log in", anonymise(&username));
+                  None
               }
             }
             None => {
-                log::warn!("Someone tried to log in with username {}", username);
+                verify_hash(password, FAKE_HASH.clone());
+                log::warn!("Someone tried to log in as Teacher with username {}", username);
                 None
             }
     }
 }
 
-fn enter_grade() {
+fn enter_grade(teacher : &Connected<Teacher>) {
     println!("What is the name of the student?");
     let name: String = input().get();
     println!("What is the new grade of the student?");
     let grade: f32 = input().add_test(|x| *x >= 0.0 && *x <= 6.0).get();
     let mut students = DATABASE.students.lock().unwrap();
     match students.get_mut(&name) {
-        Some(v) => v.grades.push(grade),
+        Some(v) => {
+            v.grades.push(grade);
+            log::info!("Teacher({}) added a grade to student({})", anonymise(&teacher.username), anonymise(&name));
+            println!("Grade added");
+        },
         None => {
             println!("User {} does not exist", name);
             return;
