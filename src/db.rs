@@ -1,11 +1,11 @@
+use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
 use std::error::Error;
+use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::Mutex;
-use serde::{Deserialize, Serialize};
-use lazy_static::lazy_static;
 
 const DATABASE_FILE: &str = "db.json";
 
@@ -24,13 +24,12 @@ pub struct Teacher {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DataBase {
-   pub students: Mutex<HashMap<String, Student>>,
-   pub teachers: Mutex<HashMap<String, Teacher>>,
+    pub students: Mutex<HashMap<String, Student>>,
+    pub teachers: Mutex<HashMap<String, Teacher>>,
 }
 
 lazy_static! {
     pub static ref DATABASE: DataBase = {
-        log::info!("Loading database");
         read_database_from_file(DATABASE_FILE).unwrap_or_else(|_| {
             log::error!("Failed to load database");
             DataBase {
@@ -41,9 +40,8 @@ lazy_static! {
     };
 }
 
-fn read_database_from_file<P: AsRef<Path>>(
-    path: P,
-) -> Result<DataBase, Box<dyn Error>> {
+fn read_database_from_file<P: AsRef<Path>>(path: P) -> Result<DataBase, Box<dyn Error>> {
+    log::info!("Loading database");
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let map = serde_json::from_reader(reader)?;
@@ -51,7 +49,7 @@ fn read_database_from_file<P: AsRef<Path>>(
 }
 
 pub fn save_database_to_file() {
-    println!("Saving database!");
+    log::info!("Saving database");
     let db = &*DATABASE;
     let file = File::create(DATABASE_FILE).unwrap();
     let writer = BufWriter::new(file);
