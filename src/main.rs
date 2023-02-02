@@ -1,6 +1,7 @@
 mod anonymiser;
 mod db;
 mod hash;
+mod crypto;
 
 use crate::anonymiser::anonymise;
 use crate::db::{save_database_to_file, Teacher, DATABASE};
@@ -9,6 +10,7 @@ use lazy_static::lazy_static;
 use read_input::prelude::*;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::OpenOptions;
+use dotenv::dotenv;
 
 // used to store keep track of the entity username because username is not stored in the struct
 struct Connected<T> {
@@ -184,6 +186,7 @@ fn quit() {
 }
 
 fn main() {
+    dotenv().ok();
     WriteLogger::init(
         LevelFilter::Trace,
         Config::default(),

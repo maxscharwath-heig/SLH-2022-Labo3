@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::Mutex;
+use crate::crypto;
 
 const DATABASE_FILE: &str = "db.json";
 
@@ -44,7 +45,7 @@ fn read_database_from_file<P: AsRef<Path>>(path: P) -> Result<DataBase, Box<dyn 
     log::info!("Loading database");
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let map = serde_json::from_reader(reader)?;
+    let map = crypto::from_reader(reader)?;
     Ok(map)
 }
 
@@ -53,5 +54,5 @@ pub fn save_database_to_file() {
     let db = &*DATABASE;
     let file = File::create(DATABASE_FILE).unwrap();
     let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, db).unwrap();
+    crypto::to_writer(writer, &db).unwrap();
 }
