@@ -23,13 +23,13 @@ fn get_secret() -> Vec<u8> {
 pub fn encrypt<T: Serialize>(data: &T) -> EncryptedData {
     let nonce = Nonce::gen();
     let secret = get_secret();
-    let data = DryocSecretBox::encrypt_to_vecbox(&serde_json::to_string(&data).unwrap().as_bytes(), &nonce, &secret);
+    let data = DryocSecretBox::encrypt_to_vecbox(&serde_json::to_vec(&data).unwrap(), &nonce, &secret);
     EncryptedData { data, nonce }
 }
 
 pub fn decrypt<T: DeserializeOwned>(data: &EncryptedData) -> T {
     let secret = get_secret();
-    let data = DryocSecretBox::decrypt_to_vec(&data.data, &data.nonce, &secret).unwrap();
+    let data = DryocSecretBox::decrypt_to_vec(&data.data, &data.nonce, &secret).expect("Failed to decrypt data");
     serde_json::from_str(&String::from_utf8(data).unwrap()).unwrap()
 }
 
